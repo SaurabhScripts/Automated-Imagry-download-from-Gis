@@ -52,20 +52,20 @@ def ScriptTool(shapefile_path, create_grid_choice, output_folder, resolution, wi
 
         layout = lyt
 
-        if create_grid_choice.lower() == 'yes':
-            if layout.mapSeries is None:
-                arcpy.AddMessage("The layout does not have a map series enabled.")
-            else:
-                ms = layout.mapSeries
-                georef_mapframe_name = ms.mapFrame
-                for pageNum in range(1, ms.pageCount + 1):
-                    if pageNum > 4:
-                        break
-                    ms.currentPageNumber = pageNum
-                    output_tiff_path = f"{output_folder}/polygon_" + str(pageNum) + ".tif"
-                    layout.exportToTIFF(output_tiff_path, resolution=resolution, world_file=False, geoTIFF_tags=True, georef_mapframe=georef_mapframe_name)
+        # if create_grid_choice.lower() == 'yes':
+        if layout.mapSeries is None:
+            arcpy.AddMessage("The layout does not have a map series enabled.")
+        else:
+            ms = layout.mapSeries
+            georef_mapframe_name = ms.mapFrame
+            for pageNum in range(1, ms.pageCount + 1):
+                if pageNum > 4:
+                    break
+                ms.currentPageNumber = pageNum
+                output_tiff_path = f"{output_folder}/polygon_" + str(pageNum) + ".tif"
+                layout.exportToTIFF(output_tiff_path, resolution=resolution, world_file=False, geoTIFF_tags=True, georef_mapframe=georef_mapframe_name)
 
-                arcpy.AddMessage("GeoTIFFs created successfully for each polygon!")
+            arcpy.AddMessage("GeoTIFFs created successfully for each polygon!")
 
     except Exception as e:
         arcpy.AddError(f"An error occurred: {e}")
