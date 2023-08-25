@@ -1,0 +1,213 @@
+########################
+# Purpose: to download Satellite imageries in bulk for given area
+# inputs: Area of Interest and parameters to generate the data
+# Output: shared location path to view the generated Images
+# Auther: Saurabh Meena
+##########################
+try:
+    import arcpy, os, sys, time, json,zipfile
+    
+
+    # Input parameters
+    AOI             = arcpy.GetParameterAsText(0) # shape file in(zip) or kml
+    output_folder   = r"D:\Transanalyst\Download Images Tool"
+    resolution      = int(arcpy.GetParameterAsText(1))
+    width_value     = float(arcpy.GetParameterAsText(2))
+    height_value    = float(arcpy.GetParameterAsText(3))
+    selected_unit   = arcpy.GetParameterAsText(4)
+    download_choice = arcpy.GetParameterAsText(5)
+    uploadPath      = r"D:\arcgisserver\directories\arcgissystem\arcgisuploads\services"
+    # setting env
+    folder = arcpy.env.scratchFolder
+    env = arcpy.env.scratchGDB
+    arcpy.env.workspace = env
+    arcpy.env.overwriteOutput = True
+    arcpy.ClearWorkspaceCache_management()
+
+    # to convert kml to layer and unzip shape file
+    def convertFileFormat(filePath):
+        try:
+            fileName = os.path.basename(filePath)
+            arcpy.AddMessage("ConvertingFileFormat Started")
+            #if Shape file (extention ".zip")
+            if fileName.endswith('.zip'):
+                # arcpy.AddMessage("Processing with Shape(.zip) file")
+                # Delete if same file already exist
+                if arcpy.Exists(folder+"/"+str(fileName)):
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4]))
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4])+".zip")                                    
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4])+".gdb")
+
+                # Unzip file
+                with zipfile.ZipFile(filePath, 'r') as zip_ref:
+                    zip_ref.extractall(folder+"/"+str(fileName[0:-4]))
+                
+                # Adding survey Tracking route into database
+                ShapePath=folder+"\\"+str(fileName[0:-4])
+                if os.path.exists(ShapePath):
+                    arcpy.env.workspace = ShapePath
+                    shapeFile = arcpy.ListFiles("*.shp")
+                    #arcpy.AddMessage("Shapefile path found")
+                    count=0
+                    filePathfile =""
+                    for file in shapeFile:
+                        filePathfile = ShapePath  +"/"+ file
+                        count+=1
+                    del shapeFile
+                    if count <1:
+                        return "Don't have valid data into the given zip file\n Create zip with all shapefile extentions directly (without folder)",False
+                    
+                    # processing if feature count and shape file count is one
+                    if int(arcpy.GetCount_management(filePathfile).getOutput(0))>0 and count == 1:
+                      filePath = arcpy.CopyFeatures_management(filePathfile,env+"/AOI")
+                      return filePath,True
+                    else:
+                        return "Don't have valid data into the given Shape file",False
+                else:
+                    return "Don't have valid data into the given zip file",False
+
+            #if KML file (extention ".kml")
+            elif fileName.endswith('.kml') or fileName.endswith('.kmz'):
+                arcpy.AddMessage("Processing with KML file")
+                # Delete if same file already exist
+                if arcpy.Exists(folder+"/"+str(fileName[0:-4])+".gdb"):
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4]))
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4])+".gdb")
+                    arcpy.Delete_management(folder+"/"+str(fileName[0:-4])+".lyr")
+
+                # KML to FeatureClass
+                arcpy.KMLToLayer_conversion(filePath, folder, str(fileName[0:-4]) , include_groundoverlay="GROUNDOVERLAY")
+                arcpy.AddMessage("KML to FeatureClass converted")
+                
+                # Adding survey Tracking route into database
+                KmlfilePath = folder+"\\"+str(fileName[0:-4])+".gdb\Placemarks\Polygons"
+                if arcpy.Exists(KmlfilePath):
+                    if int(arcpy.GetCount_management(KmlfilePath).getOutput(0))>0:
+                        filePath = arcpy.CopyFeatures_management(KmlfilePath,env+"/AOI")
+                        return filePath,True
+                    else:
+                        return "Don't have valid data into the given KML",False
+            else:
+                return "Invalid data format",False
+
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            f.write("Exception {0} at line {1}\n".format(e,exc_tb.tb_lineno))            
+            return "Exception {0} at line {1}".format(e,exc_tb.tb_lineno),False
+
+    # remove layers from the map view
+    def remove_layers_except_world_imagery(m, output_grid):
+        """Function to remove all layers except 'World Imagery' and delete grid files."""
+        for lyr in m.listLayers():
+            if lyr.name != "World Imagery":
+                if "tcrtelyqxgrid" in lyr.name.lower():
+                    arcpy.Delete_management(output_grid)
+                m.removeLayer(lyr)
+
+    # to download the images in bulk
+    def ScriptTool(AOI, output_folder, resolution, width_value, height_value, selected_unit, download_choice):
+        try:
+            arcpy.AddMessage(f"code started")
+            global OutputPath
+            OutputPath = output_folder +"/" + str(time.strftime("%d%m%Y-%H%M%S"))
+            os.makedirs(OutputPath, exist_ok = True)
+            feature_count = arcpy.GetCount_management(AOI).getOutput(0)
+            
+            grid_feature_count = feature_count
+            
+            # If only one polygon, create grid index
+            if int(feature_count) == 1:
+                input_shapefile = AOI
+                output_grid = env+"/AOI_grid"
+                grid_width = f"{width_value} {selected_unit}"
+                grid_height = f"{height_value} {selected_unit}"
+                arcpy.cartography.GridIndexFeatures(output_grid, in_features=input_shapefile, polygon_width=grid_width, polygon_height=grid_height)
+                arcpy.AddMessage(f"grid created")
+                
+                # After grid creation, display the number of polygons in the grid
+                grid_feature_count = arcpy.GetCount_management(output_grid).getOutput(0)
+                arcpy.AddMessage(f"The grid contains {grid_feature_count} polygons.")
+                AOI = output_grid
+            else:
+                arcpy.AddMessage(f"Input data is not valid. It must be a single polygon.")
+            # Determine how many polygons to download
+            if download_choice.lower() == 'all':
+                num_polygons_to_download = int(grid_feature_count)
+            else:
+                try:
+                    arcpy.AddMessage(f"{download_choice} ")
+                    num_polygons_to_download = int(download_choice)
+                except ValueError:
+                    arcpy.AddError("Invalid download choice provided.")
+                    return
+
+            # Map operation to create layout view
+        
+            p = arcpy.mp.ArcGISProject(r"D:\arcgisserver\directories\arcgissystem\arcgisinput\AdminTools\p20\WindProject_3.aprx")
+            arcpy.AddMessage("arcmap Project started")
+            m = p.listMaps()[0]
+            added_layer = m.addDataFromPath(AOI)
+            layer_count = len(m.listLayers())
+            arcpy.AddMessage(f"Total number of layers: {layer_count}")
+
+            for lyr in m.listLayers():
+                if lyr.name != "World Imagery":
+                    lyr.visible = False
+
+            l_cim = added_layer.getDefinition('V2')
+            lURI = l_cim.uRI
+            lyt = p.listLayouts('Layout1')[0]
+            lyt_cim = lyt.getDefinition('V2')
+            ms = arcpy.cim.CreateCIMObjectFromClassName('CIMSpatialMapSeries', 'V2')
+            ms.enabled = True
+            ms.mapFrameName = "Map Frame"
+            ms.startingPageNumber = 1
+            ms.currentPageID = 2
+            ms.indexLayerURI = lURI
+            ms.nameField = "PageName"
+            ms.sortField = "PageName"
+            ms.sortAscending = True
+            ms.scaleRounding = 100
+            ms.extentOptions = "BestFit"
+            ms.marginType = "Percent"
+            ms.margin = 1
+            lyt_cim.mapSeries = ms
+            lyt.setDefinition(lyt_cim)
+            lyt_cim = lyt.getDefinition('V2')
+            lyt.setDefinition(lyt_cim)
+            layout = lyt
+            for lyr in m.listLayers():
+                if lyr.name != "World Imagery":
+                    lyr.visible = False
+            if layout.mapSeries is None:
+                arcpy.AddMessage("The layout does not have a map series enabled.")
+            else:
+                ms = layout.mapSeries                
+                georef_mapframe_name = ms.mapFrame
+                for pageNum in range(1, num_polygons_to_download + 1):
+                    ms.currentPageNumber = pageNum
+                    output_tiff_path = f"{OutputPath}/polygon_" + str(pageNum) + ".tif"
+                    layout.exportToTIFF(output_tiff_path, resolution=resolution, world_file=False, geoTIFF_tags=True, georef_mapframe=georef_mapframe_name)
+                    arcpy.AddMessage(f"Downloaded {pageNum} out of {num_polygons_to_download} polygons.")
+            arcpy.AddMessage(f"Images generated and stored on above path : {OutputPath}")
+        except Exception as e:
+            arcpy.AddError(f"An error occurred: {e}")
+        finally:
+            remove_layers_except_world_imagery(m, output_grid)
+
+    # code execution
+    ## serviceName,itemID,itemName = AOI["serviceName"],AOI["itemID"],AOI["itemName"]                
+    ##  serverPath = uploadPath +"/"+ serviceName +"/"+ itemID +"/"+ itemName
+    # executing fuction to convert input file format (kml/zip) to feature class
+    response,result = convertFileFormat(AOI)
+    if result ==True:
+        arcpy.AddMessage("executing function: ScriptTool")
+        # executing function to download the images
+        ScriptTool(response, output_folder, resolution, width_value, height_value, selected_unit, download_choice)
+    
+except Exception as e:
+    exc_type, exc_obj, exc_tb = sys.exc_info()
+    arcpy.SetParameterAsText(7, json.dumps({"message": "Process Failed","success":False, "errorCode": 2000, "error": "exceptions: {0} occurred at line number {1}".format(e, exc_tb.tb_lineno)},indent=4))
+    arcpy.AddError(json.dumps({"message": "Process Failed","success":False, "errorCode": 2000, "error": "exceptions: {0} occurred at line number {1}".format(e, exc_tb.tb_lineno)}))
+finally:
+    sys.exit()
